@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://fastapi_user:fastapi_password@localhost:5432/fastapi_db")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:w4qu+0sj@localhost:5432/postgres")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 # Create SQLAlchemy engine
@@ -163,141 +163,7 @@ async def search_items_raw_sql(query: str, db: Session = Depends(get_db)):
         return {"query": query, "results": items}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/analytics/items-summary")
-async def get_items_analytics_raw_sql(db: Session = Depends(get_db)):
-    """Analytics query using raw SQL for complex aggregations"""
-    try:
-        sql = text("""
-            WITH monthly_stats AS (
-                SELECT 
-                    DATE_TRUNC('month', created_at) as month,
-                    COUNT(*) as items_created,
-                    AVG(LENGTH(name)) as avg_name_length
-                FROM items 
-                GROUP BY DATE_TRUNC('month', created_at)
-            ),
-            total_stats AS (
-                SELECT 
-                    COUNT(*) as total_items,
-                    MIN(created_at) as first_item_date,
-                    MAX(created_at) as last_item_date
-                FROM items
-            )
-            SELECT 
-                json_build_object(
-                    'total_items', ts.total_items,
-                    'first_item_date', ts.first_item_date,
-                    'last_item_date', ts.last_item_date,
-                    'monthly_breakdown', json_agg(
-                        json_build_object(
-                            'month', ms.month,
-                            'items_created', ms.items_created,
-                            'avg_name_length', ROUND(ms.avg_name_length, 2)
-                        ) ORDER BY ms.month DESC
-                    )
-                ) as analytics
-            FROM total_stats ts
-            CROSS JOIN monthly_stats ms
-            GROUP BY ts.total_items, ts.first_item_date, ts.last_item_date
-        """)
-        
-        result = db.execute(sql).fetchone()
-        return result.analytics if result else {}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/items/bulk-create")
-async def bulk_create_items_raw_sql(items: List[ItemCreate], db: Session = Depends(get_db)):
-    """Bulk insert using raw SQL for better performance"""
-    if not items or len(items) > 1000:  # Limit bulk operations
-        raise HTTPException(status_code=400, detail="Invalid item count (max 1000)")
     
-    try:
-        # Using PostgreSQL's efficient bulk insert
-        values = []
-        for item in items:
-            values.append({
-                "name": item.name,
-                "description": item.description or None
-            })
-        
-        sql = text("""
-            INSERT INTO items (name, description, created_at)
-            SELECT 
-                unnest(:names),
-                unnest(:descriptions),
-                NOW()
-            RETURNING id, name, description, created_at
-        """)
-        
-        result = db.execute(sql, {
-            "names": [item.name for item in items],
-            "descriptions": [item.description for item in items]
-        })
-        
-        db.commit()
-        
-        created_items = []
-        for row in result:
-            created_items.append({
-                "id": row.id,
-                "name": row.name,
-                "description": row.description,
-                "created_at": row.created_at
-            })
-        
-        return {
-            "message": f"Created {len(created_items)} items",
-            "items": created_items
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ========================================
-# HYBRID APPROACH (ORM + Raw SQL)
-# ========================================
-
-@app.get("/users/{user_id}/items")
-async def get_user_items_hybrid(user_id: int, db: Session = Depends(get_db)):
-    """Hybrid: Use ORM for simple checks, raw SQL for complex queries"""
-    
-    # First, check if user exists using ORM (simple and clear)
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Then use raw SQL for complex aggregation
-    sql = text("""
-        SELECT 
-            i.*,
-            COUNT(*) OVER() as total_count,
-            ROW_NUMBER() OVER(ORDER BY i.created_at DESC) as row_num
-        FROM items i
-        WHERE i.id IN (
-            -- Assume we had a user_items relationship table
-            SELECT item_id FROM user_items WHERE user_id = :user_id
-        )
-        ORDER BY i.created_at DESC
-    """)
-    
-    try:
-        result = db.execute(sql, {"user_id": user_id})
-        items = [dict(row) for row in result]
-        
-        return {
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email
-            },
-            "items": items,
-            "total_count": len(items)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ========================================
 # UTILITY FUNCTIONS
 # ========================================
@@ -324,8 +190,7 @@ async def debug_raw_query(query: str, db: Session = Depends(get_db)):
         
         result = execute_raw_query(db, query)
         return {"query": query, "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
